@@ -3,11 +3,66 @@ import pandas as pd
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 import os
+import requests
+from dataclasses import dataclass
+import openai
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Constants
 ELEMENT_TYPES = ['role', 'goal', 'audience', 'context', 'output', 'tone']
 CSV_COLUMNS = ['title', 'type', 'content']
 PROMPT_HISTORY_COLUMNS = ['name', 'timestamp', 'prompt']
+
+# LLM settings from environment variables
+DEFAULT_BASE_URL = os.getenv('BASE_URL', 'http://localhost:11434/v1')
+DEFAULT_API_KEY = os.getenv('API_KEY', '12345678')
+DEFAULT_MODEL = os.getenv('MODEL_NAME', 'llama2:13b')
+
+@dataclass
+class LLMSettings:
+    base_url: str
+    api_key: str
+    model_name: str
+    is_connected: bool = False
+    error_message: str = ""
+
+class LLMManager:
+    @staticmethod
+    def setup_client(settings: LLMSettings) -> openai.OpenAI:
+        return openai.OpenAI(
+            base_url=settings.base_url,
+            api_key=settings.api_key
+        )
+
+    @staticmethod
+    def test_connection(settings: LLMSettings) -> tuple[bool, str]:
+        try:
+            client = LLMManager.setup_client(settings)
+            # Test model availability with a simple completion
+            response = client.chat.completions.create(
+                model=settings.model_name,
+                messages=[{"role": "user", "content": "test"}],
+                max_tokens=5
+            )
+            return True, ""
+        except Exception as e:
+            return False, f"Connection error: {str(e)}"
+
+    @staticmethod
+    def generate_response(settings: LLMSettings, prompt: str) -> tuple[bool, str]:
+        try:
+            client = LLMManager.setup_client(settings)
+            response = client.chat.completions.create(
+                model=settings.model_name,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=1000
+            )
+            return True, response.choices[0].message.content
+        except Exception as e:
+            return False, f"Generation error: {str(e)}"
 
 # Custom theme and styling
 def set_theme():
@@ -214,6 +269,20 @@ class PromptBuilder:
         # Generate and display prompt
         prompt = PromptBuilder._generate_prompt(selections, df, recursive_feedback)
         PromptBuilder._display_prompt(prompt)
+        
+        # Add LLM response section
+        if 'llm_settings' in st.session_state and st.session_state.llm_settings.is_connected:
+            if st.button("Generate Response"):
+                success, response = LLMManager.generate_response(
+                    st.session_state.llm_settings, 
+                    prompt
+                )
+                if success:
+                    st.text_area("LLM Response", value=response, height=250)
+                else:
+                    st.error(response)
+        else:
+            st.warning("Please configure and connect to LLM in Settings to generate responses")
 
     @staticmethod
     def _create_section(title: str, element_type: str, df: pd.DataFrame, 
@@ -295,13 +364,51 @@ class PromptBrowser:
                 st.text_area("Prompt Content", value=row['prompt'], 
                             height=150, key=f"prompt_{index}")
 
+class SettingsManager:
+    @staticmethod
+    def render():
+        st.subheader("LLM Settings")
+        
+        # Initialize settings in session state if not exists
+        if 'llm_settings' not in st.session_state:
+            st.session_state.llm_settings = LLMSettings(
+                base_url=DEFAULT_BASE_URL,
+                api_key=DEFAULT_API_KEY,
+                model_name=DEFAULT_MODEL
+            )
+        
+        settings = st.session_state.llm_settings
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            new_base_url = st.text_input("Base URL", value=settings.base_url)
+            new_api_key = st.text_input("API Key", value=settings.api_key, type="password")
+        with col2:
+            new_model_name = st.text_input("Model Name", value=settings.model_name)
+            
+        if st.button("Apply Settings"):
+            settings.base_url = new_base_url
+            settings.api_key = new_api_key
+            settings.model_name = new_model_name
+            
+            # Test connection
+            is_connected, error_msg = LLMManager.test_connection(settings)
+            settings.is_connected = is_connected
+            settings.error_message = error_msg
+            
+        # Display connection status
+        if settings.is_connected:
+            st.success("✓ Connected to LLM")
+        elif settings.error_message:
+            st.error(f"✗ Connection failed: {settings.error_message}")
+
 def main():
     st.set_page_config(layout="wide", page_title="KMo's Prompt Creation Tool")
     set_theme()
     
     st.title("KMo's Prompt Creation Tool")
     
-    tabs = st.tabs(["Element Creator", "Element Editor", "Prompt Builder", "Browse Prompts"])
+    tabs = st.tabs(["Element Creator", "Element Editor", "Prompt Builder", "Browse Prompts", "Settings"])
     
     with tabs[0]:
         ElementCreator.render()
@@ -311,6 +418,8 @@ def main():
         PromptBuilder.render()
     with tabs[3]:
         PromptBrowser.render()
+    with tabs[4]:
+        SettingsManager.render()
 
 if __name__ == "__main__":
     main()
